@@ -2,6 +2,9 @@ import logging
 import sys
 
 
+# Production logger config will be done in a separate config file and will be more complex.
+# Left out of the scope of the task.
+
 def __configure_print_logger() -> logging.Logger:
     logger = logging.getLogger("logger1")
     logger.setLevel(logging.DEBUG)
@@ -21,6 +24,5 @@ __print_logger = __configure_print_logger()
 
 
 def print_cmd(msg):
-    __print_logger.info(msg)
-
-
+    # Logging to the highest level possible
+    __print_logger.error(msg)
