@@ -102,26 +102,38 @@ class OrderBook:
 
     def __update_mid_prices(self, current_diff: BidAskDiff):
         mid_price = (current_diff.highest_bid_price_level + current_diff.lowest_ask_price_level) / 2
-        if self._mid_prices.empty:
+        # If update arrive at the middle of the `sample_rate` window, we are delaying to the start
+        # of the next window. These means `_mid_prices` can contain a mid-price from the future.
+        # While most of the time, time between updates is more than `sample_rate`, Coinbase occasionally sends data
+        # faster. In this case we want to remove the future value from `_mid_prices` and replace it with the actual
+        # mid-price for the given interval. Additionally, this logic allows to reprocess the same update multiple times
+        new_mid_prices = self._mid_prices[:current_diff.observed_at]
+        if new_mid_prices.empty:
             # Back filling to alight the first record with the aggregation window
-            self._mid_prices = (
+            new_mid_prices = (
                 pd.Series([mid_price], index=[current_diff.observed_at]).resample(self._sample_rate).bfill()
             )
         else:
+            # in an unlikely scenario that update aligns perfectly with the sample_rate interval, removing existing
+            # mid-price for that time
+            new_mid_prices = (
+                new_mid_prices if new_mid_prices.index[-1] != current_diff.observed_at else new_mid_prices.iloc[:-1]
+            )
             sampled_increment = pd.concat(
-                [self._mid_prices.iloc[-1:], pd.Series([mid_price], index=[current_diff.observed_at])]
-            ).resample(self._sample_rate).ffill()
-            new_mid_prices = pd.concat([self._mid_prices, sampled_increment[1:]])
+                [new_mid_prices.iloc[-1:], pd.Series([mid_price], index=[current_diff.observed_at])]
+            ).resample(self._sample_rate, closed="right").ffill()
+            new_mid_prices = pd.concat([new_mid_prices, sampled_increment[1:]])
             new_mid_prices = new_mid_prices[self.__data_cleanup_time:]
-            self._mid_prices = new_mid_prices
+        self._mid_prices = new_mid_prices
 
     def __calculate_forecast(self):
         # TODO: play with parameters (order)
         # TODO: define min number of records to start forecasting
-        if len(self._mid_prices) > 60:
+        # if len(self._mid_prices) > 60:
+        if False:
             forecast_window = pd.Timedelta(seconds=60)
             forecast_window_end_time = self._mid_prices.index[-1] + forecast_window
-            model = ARIMA(self._mid_prices, order=(50, 0, 1))
+            model = ARIMA(self._mid_prices, order=(5, 0, 1))
             model_fit = model.fit()
             # TODO: It looks like prediction is always a horizontal line. Is this correct?
             # TODO: a site-packages/statsmodels/base/data_model.py:607: ConvergenceWarning: Maximum Likelihood optimization failed to converge. Check mle_retvals

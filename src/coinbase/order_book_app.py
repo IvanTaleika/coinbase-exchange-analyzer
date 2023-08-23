@@ -105,6 +105,7 @@ class OrderBookApp:
 
     def __on_message(self, _, message):
         # TODO: I'm receiving 53 updates and then nothing. Am I hitting the rate limit?
+        #  - No, the model is just too slow with parameters (50, 0, 1)
         try:
             data = json.loads(message)
             message_type = data['type']
