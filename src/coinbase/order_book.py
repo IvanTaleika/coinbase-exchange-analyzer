@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 
 import numpy as np
@@ -36,6 +37,10 @@ class OrderBook:
         self._max_ask_bid_diff = self.__calc_ask_bid_diff()
         self.__update_mid_prices(self._max_ask_bid_diff)
         self.__calculate_forecast()
+        logging.debug(
+            f"Initialized order book using a snapshot from {self._last_update}. "
+            f"Order Book size: {len(self._bids)} bids and {len(self._asks)} asks"
+        )
 
     def update(self, update: dict):
         self._last_update = self.__parse_request_time(update['time'])
@@ -51,6 +56,10 @@ class OrderBook:
         )
         self.__update_mid_prices(new_order_diff)
         self.__calculate_forecast()
+        logging.debug(
+            f"Updated Order Book at {self._last_update}. "
+            f"Order Book size: {len(self._bids)} bids and {len(self._asks)} asks."
+        )
 
     def take_snapshot(self) -> (SortedDict[float], SortedDict[float]):
         bids = self._bids.copy()
@@ -112,11 +121,13 @@ class OrderBook:
         if len(self._mid_prices) > 60:
             forecast_window = pd.Timedelta(seconds=60)
             forecast_window_end_time = self._mid_prices.index[-1] + forecast_window
-            model = ARIMA(self._mid_prices)
+            model = ARIMA(self._mid_prices, order=(50, 0, 1))
             model_fit = model.fit()
             # TODO: It looks like prediction is always a horizontal line. Is this correct?
             # TODO: a site-packages/statsmodels/base/data_model.py:607: ConvergenceWarning: Maximum Likelihood optimization failed to converge. Check mle_retvals
             #   warnings.warn("Maximum Likelihood optimization failed to " warning is displayed constantly in the console
+            # TODO a site-packages/statsmodels/tsa/statespace/sarimax.py:966: UserWarning: Non-stationary starting autoregressive parameters found. Using zeros as starting parameters.
+            #   warn('Non-stationary starting autoregressive parameters'
             prediction = model_fit.forecast(forecast_window_end_time)
             new_end_window_predictions = pd.concat(
                 [self._end_window_predictions, prediction[forecast_window_end_time:]]
