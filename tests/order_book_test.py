@@ -5,14 +5,13 @@ import numpy as np
 import pytest
 from sortedcontainers import SortedDict
 
-from coinbase.model import OrderBookStats, BidAskDiff, Operation
+from coinbase.data_model import OrderBookStats, BidAskDiff, Order
 from coinbase.order_book import OrderBook
 
 
 # TODO: think about proper package structure for tests
 @pytest.fixture
 def default_test_order_book(sample_rate_sec=1):
-    # no compaction by default
     snapshot = {
         'type': 'snapshot',
         'product_id': 'BTC-USD',
@@ -69,8 +68,8 @@ def default_test_order_book(sample_rate_sec=1):
     mid_price = (20.1 + 14.0) / 2
 
     expected_stats = OrderBookStats(
-        Operation(14.0, 14.0),
-        Operation(20.1, 20.0),
+        Order(14.0, 14.0),
+        Order(20.1, 20.0),
         BidAskDiff(14.0, 20.1, datetime.datetime(2023, 1, 1, 0, 0, 0)),
         np.nan,
         {60: mid_price, 5 * 60: mid_price, 15 * 60: mid_price},
@@ -123,6 +122,11 @@ def test_update_updates_asks_bids_and_stats(default_test_order_book):
         'changes': [
             [
                 'buy',
+                '10000.0',
+                '0.0'
+            ],
+            [
+                'buy',
                 '10.0',
                 '0.0'
             ],
@@ -155,7 +159,7 @@ def test_update_updates_asks_bids_and_stats(default_test_order_book):
     }
     expected_stats = dataclasses.replace(
         expected_stats,
-        current_highest_bid=Operation(15.0, 5.0),
+        current_highest_bid=Order(15.0, 5.0),
         mid_prices=update_1_mid_prices,
         forecasted_mid_price=pytest.approx(17.058059499870545)
     )
@@ -171,6 +175,11 @@ def test_update_updates_asks_bids_and_stats(default_test_order_book):
         'type': 'l2update',
         'product_id': 'BTC-USD',
         'changes': [
+            [
+                'sell',
+                '0.01',
+                '0.0'
+            ],
             [
                 'sell',
                 '20.1',
@@ -209,8 +218,8 @@ def test_update_updates_asks_bids_and_stats(default_test_order_book):
             ))
     }
     expected_stats = OrderBookStats(
-        Operation(15.0, 5.0),
-        Operation(40.6, 0.6),
+        Order(15.0, 5.0),
+        Order(40.6, 0.6),
         BidAskDiff(15.0, 40.6, datetime.datetime(2023, 1, 1, 0, 5, 1)),
         pytest.approx(17.4829420254619),
         update_2_mid_prices,
@@ -279,7 +288,7 @@ def test_update_updates_asks_bids_and_stats(default_test_order_book):
     }
     expected_stats = dataclasses.replace(
         expected_stats,
-        current_lowest_ask=Operation(40.6, 0.7),
+        current_lowest_ask=Order(40.6, 0.7),
         mid_prices=update_3_mid_prices,
         forecasted_mid_price=pytest.approx(24.34572671931479)
     )
@@ -290,6 +299,108 @@ def test_update_updates_asks_bids_and_stats(default_test_order_book):
     assert expected_bids == actual_bids
     assert expected_asks == actual_asks
     assert expected_stats == actual_stats
+
+
+def test_empty_order_book_return_nans():
+    snapshot = {
+        'type': 'snapshot',
+        'product_id': 'BTC-USD',
+        'asks': [],
+        'bids': [],
+        'time': '2023-01-01T00:00:00.00000Z'
+    }
+
+    expected_bids = SortedDict(lambda x: -x)
+    expected_asks = SortedDict()
+    expected_stats = OrderBookStats(
+        Order(np.nan, np.nan),
+        Order(np.nan, np.nan),
+        BidAskDiff(np.nan, np.nan, datetime.datetime(2023, 1, 1, 0, 0, 0)),
+        np.nan,
+        {60: np.nan, 5 * 60: np.nan, 15 * 60: np.nan},
+        {60: np.nan, 5 * 60: np.nan, 15 * 60: np.nan},
+    )
+
+    order_book = OrderBook(snapshot, sample_rate_sec=1)
+    actual_bids, actual_asks = order_book.take_snapshot()
+    actual_stats = order_book.get_stats()
+
+    assert expected_bids == actual_bids
+    assert expected_asks == actual_asks
+    assert expected_stats == actual_stats
+
+    new_orders = {
+        'type': 'l2update',
+        'product_id': 'BTC-USD',
+        'changes': [
+            [
+                'sell',
+                '10.0',
+                '1.0'
+            ],
+            [
+                'buy',
+                '2.0',
+                '0.2'
+            ],
+            [
+                'sell',
+                '13.3',
+                '3.0'
+            ],
+            [
+                'buy',
+                '4.0',
+                '4.0'
+            ],
+        ],
+        'time': '2023-01-01T00:0:01.00000Z'
+    }
+    order_book.update(new_orders)
+    matched_orders = {
+        'type': 'l2update',
+        'product_id': 'BTC-USD',
+        'changes': [
+            [
+                'sell',
+                '10.0',
+                '0.0'
+            ],
+            [
+                'buy',
+                '2.0',
+                '0.0'
+            ],
+            [
+                'sell',
+                '13.3',
+                '0.0'
+            ],
+            [
+                'buy',
+                '4.0',
+                '0.0'
+            ],
+        ],
+        'time': '2023-01-01T00:00:02.00000Z'
+    }
+    order_book.update(matched_orders)
+
+    updated_mid_price = (4.0 + 10.0) / 2
+
+    expected_stats = dataclasses.replace(
+        expected_stats,
+        max_ask_bid_diff=BidAskDiff(4.0, 10.0, datetime.datetime(2023, 1, 1, 0, 0, 1)),
+        mid_prices={60: updated_mid_price, 5 * 60: updated_mid_price, 15 * 60: updated_mid_price},
+    )
+
+    actual_bids, actual_asks = order_book.take_snapshot()
+    actual_stats = order_book.get_stats()
+
+    assert expected_bids == actual_bids
+    assert expected_asks == actual_asks
+    assert expected_stats == actual_stats
+
 
 
 @pytest.mark.skip(

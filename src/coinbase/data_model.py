@@ -3,7 +3,7 @@ from datetime import datetime
 
 
 @dataclass(frozen=True)
-class Operation:
+class Order:
     price_level: float
     quantity: float
 
@@ -21,8 +21,8 @@ class BidAskDiff:
 
 @dataclass(frozen=True)
 class OrderBookStats:
-    current_highest_bid: Operation
-    current_lowest_ask: Operation
+    current_highest_bid: Order
+    current_lowest_ask: Order
     max_ask_bid_diff: BidAskDiff
     forecasted_mid_price: float
     mid_prices: dict[int, float]

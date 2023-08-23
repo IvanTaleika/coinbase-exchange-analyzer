@@ -5,7 +5,7 @@ import pandas as pd
 from sortedcontainers import SortedDict
 from statsmodels.tsa.arima.model import ARIMA
 
-from coinbase.model import OrderBookStats, BidAskDiff, Operation
+from coinbase.data_model import OrderBookStats, BidAskDiff, Order
 
 SOURCE_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
@@ -43,11 +43,13 @@ class OrderBook:
         for side, price_level_s, quantity_s in update['changes']:
             self.__insert_record(side, float(price_level_s), float(quantity_s))
 
-        new_operations_diff = self.__calc_ask_bid_diff()
+        new_order_diff = self.__calc_ask_bid_diff()
         self._max_ask_bid_diff = (
-            new_operations_diff if new_operations_diff.diff > self._max_ask_bid_diff.diff else self._max_ask_bid_diff
+            new_order_diff
+            if new_order_diff.diff > self._max_ask_bid_diff.diff or np.isnan(self._max_ask_bid_diff.diff)
+            else self._max_ask_bid_diff
         )
-        self.__update_mid_prices(new_operations_diff)
+        self.__update_mid_prices(new_order_diff)
         self.__calculate_forecast()
 
     def take_snapshot(self) -> (SortedDict[float], SortedDict[float]):
@@ -110,10 +112,10 @@ class OrderBook:
         if len(self._mid_prices) > 60:
             forecast_window = pd.Timedelta(seconds=60)
             forecast_window_end_time = self._mid_prices.index[-1] + forecast_window
-            model = ARIMA(self._mid_prices, order=(5, 1, 0))
+            model = ARIMA(self._mid_prices)
             model_fit = model.fit()
             # TODO: It looks like prediction is always a horizontal line. Is this correct?
-            # TODO: a site-packages/statsmodels/base/model.py:607: ConvergenceWarning: Maximum Likelihood optimization failed to converge. Check mle_retvals
+            # TODO: a site-packages/statsmodels/base/data_model.py:607: ConvergenceWarning: Maximum Likelihood optimization failed to converge. Check mle_retvals
             #   warnings.warn("Maximum Likelihood optimization failed to " warning is displayed constantly in the console
             prediction = model_fit.forecast(forecast_window_end_time)
             new_end_window_predictions = pd.concat(
@@ -141,10 +143,10 @@ class OrderBook:
     def __get_book(self, side):
         return self._bids if side == 'buy' else self._asks
 
-    def __get_first_record(self, side) -> Operation:
-        # TODO: handle empty dict that throws "IndexError: list index out of range". Return np.nan?
+    def __get_first_record(self, side) -> Order:
         book = self.__get_book(side)
-        return Operation(*book.peekitem(index=0))
+        record = book.peekitem(index=0) if book else (np.nan, np.nan)
+        return Order(*record)
 
     def __insert_record(self, side: str, price_level: float, quantity: float):
         book = self.__get_book(side)
