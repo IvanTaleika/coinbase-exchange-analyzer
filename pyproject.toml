@@ -1,0 +1,11 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coinbase-analyzer"
+version = "0.0.1beta"
+description = "Conbase feed analyzer CLI app for Kahoot!"
+readme = "README.md"
+requires-python = ">=3.11"
+package-dir = {"" = "src"}
