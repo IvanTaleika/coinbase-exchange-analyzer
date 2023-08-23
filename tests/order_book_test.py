@@ -4,7 +4,8 @@ import unittest
 
 from sortedcontainers import SortedDict
 
-from coinbase.app import OrderBook, OrderBookStats, BidAskDiff, Operation
+from coinbase.model import OrderBookStats, BidAskDiff, Operation
+from coinbase.order_book import OrderBook
 
 
 # Some of the tests are not implemented, because the functionality isn't essential for the POC project.
