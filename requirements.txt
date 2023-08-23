@@ -6,3 +6,4 @@ statsmodels==0.14.0
 numpy==1.25.2
 websocket-client==1.6.1
 pytest==7.4.0
+pmdarima==2.0.3

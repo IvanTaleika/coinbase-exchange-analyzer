@@ -7,13 +7,14 @@ from pathlib import Path
 import numpy as np
 import websocket
 
+from coinbase.utils import THREADS_JOIN_TIMEOUT
 from coinbase.order_book import OrderBook
 from coinbase.app_logging import print_cmd
 
 PRINT_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 PRINT_FLOAT_ACCURACY = 8
-# Up to 999999 cache files to be stored in order. Good enough for POC
-FILE_NAME_PREFIX_LENGTH = 6
+# Up to 999999999 cache files to be stored in order. Good enough for POC
+FILE_NAME_PREFIX_LENGTH = 9
 
 
 class OrderBookApp:
@@ -49,18 +50,28 @@ class OrderBookApp:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        # TODO: add unsubscribe message
-        # TODO: not sure if this implementation is correct
-        # TODO: send exit message to the websocket
         self.websocket.close()
-        self.websocket_thread.join()
+        self.websocket_thread.join(timeout=THREADS_JOIN_TIMEOUT)
+        self.__logger.debug(
+            f"Closing websocket connection and waiting for all final requests to be handled. "
+            f"Max waiting time is {THREADS_JOIN_TIMEOUT} seconds"
+        )
+        if self.order_book is not None:
+            self.order_book.__exit__(exc_type, exc_val, exc_tb)
 
     def print_stats(self):
         def __format_datetime_for_print(dt: datetime) -> str:
             return dt.strftime(PRINT_DATETIME_FORMAT)
 
         def __format_float_for_print(f: float) -> str:
-            return f"{f:.{PRINT_FLOAT_ACCURACY}f}" if f != np.nan else "not yet available"
+            return "not yet available" if np.isnan(f) else f"{f:.{PRINT_FLOAT_ACCURACY}f}"
+
+        def __format_windowed_stats(stats: dict) -> str:
+            return ", ".join([
+                f"{seconds / 60} minute(s) - {__format_float_for_print(mid_price)}"
+                for seconds, mid_price
+                in stats.items()
+            ])
 
         if self.order_book is None:
             print_cmd("Order book is not initialized yet")
@@ -83,15 +94,14 @@ class OrderBookApp:
             f"observed at {__format_datetime_for_print(stats.max_ask_bid_diff.observed_at)}"
         )
         print_cmd(
-            "  3. Mid prices for the defined aggregation windows: " +
-            (", ".join([
-                f"{seconds / 60} minute(s) - {__format_float_for_print(mid_price)}"
-                for seconds, mid_price
-                in stats.mid_prices.items()
-            ]))
+            f"  3. Average mid-price for the defined aggregation windows: {__format_windowed_stats(stats.mid_prices)}"
         )
         print_cmd(
-            f"  4. Forecasted mid price in 60 seconds - {__format_float_for_print(stats.forecasted_mid_price)}\n"
+            f"  4. Forecasted mid price in 60 seconds - {__format_float_for_print(stats.forecasted_mid_price)}"
+        )
+        print_cmd(
+            f"  5. Average forecasting error for the defined aggregation windows: "
+            f" {__format_windowed_stats(stats.forecast_errors)}\n"
         )
 
     def __on_open(self, ws):
@@ -104,8 +114,6 @@ class OrderBookApp:
         ws.send(json.dumps(subscribe_message))
 
     def __on_message(self, _, message):
-        # TODO: I'm receiving 53 updates and then nothing. Am I hitting the rate limit?
-        #  - No, the model is just too slow with parameters (50, 0, 1)
         try:
             data = json.loads(message)
             message_type = data['type']
@@ -131,4 +139,4 @@ class OrderBookApp:
         logging.error(f"Error: {error}")
 
     def __on_close(self, ws, close_status_code, close_msg):
-        print_cmd(f"Level 2 channel closed with status code {close_status_code} and message {close_msg}")
+        self.__logger.debug(f"Level 2 channel closed with status code {close_status_code} and message {close_msg}")

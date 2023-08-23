@@ -2,6 +2,7 @@ import argparse
 import logging
 import time
 
+from coinbase.app_logging import print_cmd
 from coinbase.order_book_app import OrderBookApp
 
 __DEFAULT_PRODUCT_ID = "BTC-USD"
@@ -43,6 +44,9 @@ if __name__ == "__main__":
     else:
         logging.basicConfig(level=logging.WARN)
     with OrderBookApp(args.url, args.product, args.cache) as app:
-        while True:
-            time.sleep(5)
-            app.print_stats()
+        try:
+            while True:
+                time.sleep(5)
+                app.print_stats()
+        except KeyboardInterrupt:
+            print_cmd("Received the exit signal. Cleaning up the resources and exiting...")
