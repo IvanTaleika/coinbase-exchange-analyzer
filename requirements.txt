@@ -1,3 +1,4 @@
 websockets==11.0.3
 requests==2.31.0
 pandas==2.0.3
+sortedcontainers==2.4.0
