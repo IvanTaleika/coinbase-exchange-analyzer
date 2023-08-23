@@ -24,4 +24,6 @@ class OrderBookStats:
     current_highest_bid: Operation
     current_lowest_ask: Operation
     max_ask_bid_diff: BidAskDiff
+    forecasted_mid_price: float
     mid_prices: dict[int, float]
+    forecast_errors: dict[int, float]
