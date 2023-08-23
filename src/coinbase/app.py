@@ -5,8 +5,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from queue import PriorityQueue
 
+# TODO: should we use PQ from asyncio instead?
 import pandas as pd
 import websocket
+
+from coinbase.immutable_objects_priority_queue import ImmutableObjectsPriorityQueue
 
 
 @dataclass(frozen=True)
@@ -19,6 +22,7 @@ class Operation(ABC):
     def priority(self):
         pass
 
+    # TODO: should we use comparator instead of overriding __lt__?
     def __lt__(self, other):
         return self.priority < other.priority
 
@@ -46,24 +50,24 @@ class OperationsDiff:
     def diff(self):
         return self.ask.price_level - self.bid.price_level
 
-    def __lt__(self, other):
-        return self.diff < other.diff
 
-    def __eq__(self, other):
-        return self.diff == other.diff
-
-    def __gt__(self, other):
-        return self.diff > other.diff
+@dataclass(frozen=True)
+class OrderBookStats:
+    highest_bid: Bid
+    lowest_ask: Ask
+    operations_diff: OperationsDiff
 
 
 class OrderBook:
-    __ZERO_QUANTITY_THRESHOLD = 0.1
 
-    def __init__(self, snapshot: dict):
-        self.bids: PriorityQueue[Bid] = PriorityQueue()
-        self.asks: PriorityQueue[Ask] = PriorityQueue()
-        self.n_bids_zeros = 0
-        self.n_asks_zeros = 0
+    DEFAULT_COMPACTION_THRESHOLD = 0.1
+
+    def __init__(self, snapshot: dict, compaction_threshold=DEFAULT_COMPACTION_THRESHOLD):
+        self.compaction_threshold = compaction_threshold
+        self._bids: ImmutableObjectsPriorityQueue[Bid] = ImmutableObjectsPriorityQueue()
+        self._asks: ImmutableObjectsPriorityQueue[Ask] = ImmutableObjectsPriorityQueue()
+        self._n_bids_zeros = 0
+        self._n_asks_zeros = 0
 
         snapshot_time = snapshot['time']
 
@@ -73,24 +77,36 @@ class OrderBook:
         for price_level_s, quantity_s in snapshot['asks']:
             self.__insert_record('sell', float(price_level_s), float(quantity_s))
 
-        self.__compact()
-        self.operations_diff = OperationsDiff(self.__get_first_record('buy'), self.__get_first_record('sell'), snapshot_time)
+        self.__compact_if_zeros_quantity_threshold_is_reached()
+        self._operations_diff = OperationsDiff(self.__get_first_record('buy'), self.__get_first_record('sell'),
+                                               snapshot_time)
 
     def update(self, update: dict):
         update_time = update['time']
 
         for side, price_level_s, quantity_s in update['changes']:
             self.__insert_record('buy', float(price_level_s), float(quantity_s))
-        self.__compact()
+        self.__compact_if_zeros_quantity_threshold_is_reached()
 
-        new_operations_diff = OperationsDiff(self.__get_first_record('buy'), self.__get_first_record('sell'), update_time)
-        self.operations_diff = new_operations_diff if new_operations_diff > self.operations_diff else self.operations_diff
+        new_operations_diff = OperationsDiff(self.__get_first_record('buy'), self.__get_first_record('sell'),
+                                             update_time)
+        self._operations_diff = (
+            new_operations_diff if new_operations_diff.diff > self._operations_diff.diff else self._operations_diff
+        )
+
+    def take_snapshot(self, compact=True) -> (ImmutableObjectsPriorityQueue[Bid], ImmutableObjectsPriorityQueue[Ask]):
+        if compact:
+            self.__compact_queue('buy')
+            self.__compact_queue('sell')
+        bids = self._bids.clone()
+        asks = self._asks.clone()
+        return bids, asks
+
+    def get_stats(self):
+        return OrderBookStats(self.__get_first_record('buy'), self.__get_first_record('sell'), self._operations_diff)
 
     def __get_first_record(self, side) -> Operation:
-        if side == 'buy':
-            pq = self.bids
-        else:
-            pq = self.asks
+        pq = self._bids if side == 'buy' else self._asks
         while not pq.empty():
             record = pq.queue[0]
             if record.quantity > 0:
@@ -103,51 +119,46 @@ class OrderBook:
 
     def __insert_record(self, side, price_level, quantity):
         if side == 'buy':
-            self.bids.put(Bid(price_level, quantity))
+            self._bids.put(Bid(price_level, quantity))
         else:
-            self.asks.put(Ask(price_level, quantity))
+            self._asks.put(Ask(price_level, quantity))
 
         if quantity == 0:
             self.__change_n_zeros(side, 1)
 
     def __change_n_zeros(self, side: str, by: int):
         if side == 'buy':
-            self.n_bids_zeros += by
+            self._n_bids_zeros += by
         else:
-            self.n_asks_zeros += by
+            self._n_asks_zeros += by
 
-    def __compact(self):
-        # Algorithms theory describes an IndexPriorityQueue (for example,
-        # https://algs4.cs.princeton.edu/24pq/IndexMinPQ.java.html) with O(log(n)) deletion. We can define max
-        # precision for the price, multiply it by 10^precision and use it as an index. Then we can delete 0 quantity
-        # orders in O(log(n)) time. However, the only implementation for python I was able to find
-        # (https://github.com/nvictus/priority-queue-dictionary) isn't widely used. While it can be OK for PoC,
-        # I won't use such a solution in production. That is why we keep zeros in the queue and compact it from time
+    def __compact_if_zeros_quantity_threshold_is_reached(self):
+        # There are data structure that keep order and provide O(log(n)) deletion, like IndexPriorityQueue (for example,
+        # https://algs4.cs.princeton.edu/24pq/IndexMinPQ.java.html) or Red-Black dictionaries. Unfortunately,
+        # these data structures are not available out of the box and libraries that provide them are not widely used
+        # (like this one https://github.com/nvictus/priority-queue-dictionary). While it can be OK for PoC, it is better
+        # to avoid such libraries in production. That is why we keep zeros in the queue and compact it from time
         # to time instead.
-        self.n_bids_zeros, self.bids = self.__compact_queue(self.n_bids_zeros, self.bids)
-        self.n_asks_zeros, self.asks = self.__compact_queue(self.n_asks_zeros, self.asks)
+        if self._n_bids_zeros / self._bids.qsize() > self.compaction_threshold:
+            self.__compact_queue('buy')
+        if self._n_asks_zeros / self._asks.qsize() > self.compaction_threshold:
+            self.__compact_queue('ask')
 
-    # TODO: change to static?
-    def __compact_queue(self, n_zeros: int, pq: PriorityQueue[Operation]) -> (int, PriorityQueue[Operation]):
-        if n_zeros / pq.qsize() > self.__ZERO_QUANTITY_THRESHOLD:
-            new_pq = PriorityQueue()
-            # The overall complexity is O(m*log(m)). Additionally, the source queue is already partially sorted,
-            # reducing number of swim operations we need to insert a record into the new queue.
-            for operation in pq.queue:
-                if operation.quantity > 0:
-                    new_pq.put(operation)
-            return 0, new_pq
+    def __compact_queue(self, side: str):
+        pq = self._bids if side == 'buy' else self._asks
+        new_pq = PriorityQueue()
+        # The overall complexity is O(m*log(m)). Additionally, the source queue is already partially sorted,
+        # reducing number of swim operations we need to insert a record into the new queue.
+        for operation in pq.queue:
+            if operation.quantity > 0:
+                new_pq.put(operation)
+
+        if side == 'buy':
+            self._bids = pq
+            self._n_bids_zeros = 0
         else:
-            return n_zeros, pq
-
-    def print_stats(self):
-        highest_bid = self.__get_first_record('buy')
-        lowest_ask = self.__get_first_record('sell')
-        print(f"Highest bid: price - {highest_bid.price_level}, quantity - {highest_bid.quantity}")
-        print(f"Lowest ask: price - {lowest_ask.price_level}, quantity - {lowest_ask.quantity}")
-
-        print(f"Biggest difference in price between the highest bid and lowest ask we have seen so far is "
-              f"{self.operations_diff.diff}, observed at {self.operations_diff.observed_at}.")
+            self._asks = pq
+            self._n_asks_zeros = 0
 
 
 class OrderBookApp:
@@ -178,7 +189,11 @@ class OrderBookApp:
         # TODO: don't use pandas?
         current_time = pd.to_datetime('now')
         print(f"Order book stats for {self.product_id} at {current_time}:")
-        self.order_book.print_stats()
+        stats = self.order_book.get_stats()
+        print(f"Highest bid: price - {stats.highest_bid.price_level}, quantity - {stats.highest_bid.quantity}")
+        print(f"Lowest ask: price - {stats.lowest_ask.price_level}, quantity - {stats.lowest_ask.quantity}")
+        print(f"Biggest difference in price between the highest bid and lowest ask we have seen so far is "
+              f"{stats.operations_diff.diff}, observed at {stats.operations_diff.observed_at}.")
 
     def __on_open(self, ws):
         subscribe_message = {
