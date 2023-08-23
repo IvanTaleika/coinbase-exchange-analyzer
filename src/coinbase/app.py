@@ -4,11 +4,13 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 
+import pandas as pd
 import websocket
 from sortedcontainers import SortedDict
 
 SOURCE_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 PRINT_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+PRINT_FLOAT_ACCURACY = 8
 
 
 @dataclass(frozen=True)
@@ -33,13 +35,20 @@ class OrderBookStats:
     current_highest_bid: Operation
     current_lowest_ask: Operation
     max_ask_bid_diff: BidAskDiff
+    mid_prices: dict[int, float]
 
 
 class OrderBook:
+    DEFAULT_AGGREGATION_WINDOWS_MINUTES = [60, 60 * 5, 60 * 15]
 
-    def __init__(self, snapshot: dict):
+    def __init__(self, snapshot: dict, aggregation_windows_sec=None):
+        if aggregation_windows_sec is None:
+            aggregation_windows_sec = self.DEFAULT_AGGREGATION_WINDOWS_MINUTES
+            aggregation_windows_sec.sort()
+        self._aggregation_windows = [pd.Timedelta(seconds=m) for m in aggregation_windows_sec]
         self._bids: SortedDict[float, float] = SortedDict(lambda x: -x)
         self._asks: SortedDict[float, float] = SortedDict()
+        self._mid_prices = pd.Series()
 
         snapshot_time = self.__parse_request_time(snapshot['time'])
 
@@ -50,6 +59,8 @@ class OrderBook:
             self.__insert_record('sell', float(price_level_s), float(quantity_s))
 
         self._max_ask_bid_diff = self.__calc_ask_bid_diff(snapshot_time)
+        self.__update_mid_prices(self._max_ask_bid_diff)
+        self._last_update = snapshot_time
 
     def update(self, update: dict):
         update_time = self.__parse_request_time(update['time'])
@@ -61,6 +72,8 @@ class OrderBook:
         self._max_ask_bid_diff = (
             new_operations_diff if new_operations_diff.diff > self._max_ask_bid_diff.diff else self._max_ask_bid_diff
         )
+        self.__update_mid_prices(new_operations_diff)
+        self._last_update = update_time
 
     def take_snapshot(self) -> (SortedDict[float], SortedDict[float]):
         bids = self._bids.copy()
@@ -68,7 +81,26 @@ class OrderBook:
         return bids, asks
 
     def get_stats(self):
-        return OrderBookStats(self.__get_first_record('buy'), self.__get_first_record('sell'), self._max_ask_bid_diff)
+
+        mid_price_stats = {}
+        for window in self._aggregation_windows:
+            window_mid_prices = self._mid_prices[self._last_update - window:]
+            avg_mid_price = window_mid_prices.mean()
+            mid_price_stats[window.seconds] = avg_mid_price
+
+        return OrderBookStats(
+            self.__get_first_record('buy'),
+            self.__get_first_record('sell'),
+            self._max_ask_bid_diff,
+            mid_price_stats
+        )
+
+    def __update_mid_prices(self, current_diff: BidAskDiff):
+        cut_off_time = current_diff.observed_at - self._aggregation_windows[-1]
+        mid_price = (current_diff.highest_bid_price_level + current_diff.lowest_ask_price_level) / 2
+        new_mid_prices = pd.concat([self._mid_prices, pd.Series([mid_price], index=[current_diff.observed_at])])
+        new_mid_prices = new_mid_prices[cut_off_time:]
+        self._mid_prices = new_mid_prices
 
     def __parse_request_time(self, request_time: str) -> datetime:
         return datetime.strptime(request_time, SOURCE_DATETIME_FORMAT)
@@ -115,6 +147,7 @@ class OrderBookApp:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        # TODO: add unsubscribe message
         # TODO: not sure if this implementation is correct
         # TODO: send exit message to the websocket
         self.websocket.close()
@@ -124,22 +157,34 @@ class OrderBookApp:
         def __format_datetime_for_print(dt: datetime) -> str:
             return dt.strftime(PRINT_DATETIME_FORMAT)
 
+        def __format_float_for_print(f: float) -> str:
+            return f"{f:.{PRINT_FLOAT_ACCURACY}f}"
+
         current_local_datetime = datetime.now()
         print(f"Order book stats for {self.product_id} at {__format_datetime_for_print(current_local_datetime)}:")
         stats = self.order_book.get_stats()
         print(
-            f"Highest bid: price - {stats.current_highest_bid.price_level}, "
-            f"quantity - {stats.current_highest_bid.quantity}"
+            f"  Highest bid: price - {__format_float_for_print(stats.current_highest_bid.price_level)}, "
+            f"quantity - {__format_float_for_print(stats.current_highest_bid.quantity)}"
         )
         print(
-            f"Lowest ask: price - {stats.current_lowest_ask.price_level}, "
-            f"quantity - {stats.current_lowest_ask.quantity}"
+            f"  Lowest ask: price - {__format_float_for_print(stats.current_lowest_ask.price_level)}, "
+            f"quantity - {__format_float_for_print(stats.current_lowest_ask.quantity)}"
         )
         print(
-            f"The biggest difference in price between the highest bid and the lowest ask we have seen so far is "
-            f"{stats.max_ask_bid_diff.diff}, "
+            f"  The biggest difference in price between the highest bid and the lowest ask we have seen so far is "
+            f"{__format_float_for_print(stats.max_ask_bid_diff.diff)}, "
             f"observed at {__format_datetime_for_print(stats.max_ask_bid_diff.observed_at)}."
         )
+        print(
+            "  Mid prices for the defined aggregation windows: " +
+            (", ".join([
+                f"{seconds / 60} minute(s) - {__format_float_for_print(mid_price)}"
+                for seconds, mid_price
+                in stats.mid_prices.items()
+            ]))
+        )
+        print()
 
     def __on_open(self, ws):
         subscribe_message = {

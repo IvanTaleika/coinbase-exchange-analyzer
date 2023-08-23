@@ -1,4 +1,5 @@
 import dataclasses
+import datetime
 import unittest
 
 from sortedcontainers import SortedDict
@@ -66,11 +67,13 @@ class OrderBookTest(unittest.TestCase):
             (100.0, 10.1),
             (400.0, 400.0),
         })
+        mid_price = (20.1 + 14.0) / 2
 
         expected_stats = OrderBookStats(
             Operation(14.0, 14.0),
             Operation(20.1, 20.0),
-            BidAskDiff(14.0, 20.1, '2023-01-01T00:00:00.00000Z')
+            BidAskDiff(14.0, 20.1, datetime.datetime(2023, 1, 1, 0, 0, 0)),
+            {60: mid_price, 5 * 60: mid_price, 15 * 60: mid_price}
         )
 
         order_book = OrderBook(snapshot)
@@ -90,6 +93,8 @@ class OrderBookTest(unittest.TestCase):
 
     def test_update_updates_asks_bids_and_stats(self):
         order_book, default_bids, default_asks, default_stats = self.init_test_order_book()
+        # All windows have the same mid_price
+        default_mid_price = default_stats.mid_prices[60]
 
         update = {
             'type': 'l2update',
@@ -102,6 +107,8 @@ class OrderBookTest(unittest.TestCase):
         expected_bids = default_bids
         expected_asks = default_asks
         expected_stats = default_stats
+
+        update_0_mid_price = default_mid_price
 
         actual_bids, actual_asks = order_book.take_snapshot()
         actual_stats = order_book.get_stats()
@@ -130,7 +137,7 @@ class OrderBookTest(unittest.TestCase):
                     '5.0'
                 ],
             ],
-            'time': '2023-01-01T00:00:02.00000Z'
+            'time': '2023-01-01T00:01:01.00000Z'
         }
         order_book.update(update)
 
@@ -140,9 +147,16 @@ class OrderBookTest(unittest.TestCase):
             (2.1, 20.0),
         })
 
+        update_1_mid_price = (15.0 + 20.1) / 2
+        update_1_mid_prices = {
+            60: (update_1_mid_price + update_0_mid_price) / 2,
+            5 * 60: (update_1_mid_price + update_0_mid_price + default_mid_price) / 3,
+            15 * 60: (update_1_mid_price + update_0_mid_price + default_mid_price) / 3
+        }
         expected_stats = dataclasses.replace(
             expected_stats,
             current_highest_bid=Operation(15.0, 5.0),
+            mid_prices=update_1_mid_prices
         )
 
         actual_bids, actual_asks = order_book.take_snapshot()
@@ -172,7 +186,7 @@ class OrderBookTest(unittest.TestCase):
                     '0.6'
                 ],
             ],
-            'time': '2023-01-01T00:00:03.00000Z'
+            'time': '2023-01-01T00:05:01.00000Z'
         }
         order_book.update(update)
 
@@ -182,10 +196,17 @@ class OrderBookTest(unittest.TestCase):
             (400.0, 400.0),
         })
 
+        update_2_mid_price = (15.0 + 40.6) / 2
+        update_2_mid_prices = {
+            60: update_2_mid_price,
+            5 * 60: (update_2_mid_price + update_1_mid_price + update_0_mid_price) / 3,
+            15 * 60: (update_2_mid_price + update_1_mid_price + update_0_mid_price + default_mid_price) / 4
+        }
         expected_stats = OrderBookStats(
             Operation(15.0, 5.0),
             Operation(40.6, 0.6),
-            BidAskDiff(15.0, 40.6, '2023-01-01T00:00:03.00000Z')
+            BidAskDiff(15.0, 40.6, datetime.datetime(2023, 1, 1, 0, 5, 1)),
+            update_2_mid_prices
         )
 
         actual_bids, actual_asks = order_book.take_snapshot()
@@ -220,7 +241,7 @@ class OrderBookTest(unittest.TestCase):
                     '100.0'
                 ],
             ],
-            'time': '2023-01-01T00:00:03.00000Z'
+            'time': '2023-01-01T00:15:01.00000Z'
         }
         order_book.update(update)
 
@@ -236,9 +257,16 @@ class OrderBookTest(unittest.TestCase):
             (400.0, 400.0),
         })
 
+        update_3_mid_price = (15.0 + 40.6) / 2
+        update_3_mid_prices = {
+            60: update_3_mid_price,
+            5 * 60: update_3_mid_price,
+            15 * 60: (update_3_mid_price + update_2_mid_price + update_1_mid_price + update_0_mid_price) / 4
+        }
         expected_stats = dataclasses.replace(
             expected_stats,
             current_lowest_ask=Operation(40.6, 0.7),
+            mid_prices=update_3_mid_prices
         )
 
         actual_bids, actual_asks = order_book.take_snapshot()
