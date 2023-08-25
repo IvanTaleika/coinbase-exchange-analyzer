@@ -118,6 +118,8 @@ class OrderBook:
         return self._forecast.iloc[-1]["forecast_mid_price"] if not self._forecast.empty else np.nan
 
     def get_stats(self) -> OrderBookStats:
+        # TODO: an issue with this approach is that it shows stats from the last update time, not from the request time.
+        #  If there are no frequent updates, the stats will be incorrect.
         def __calculate_window_means(series: pd.Series, end_time: datetime):
             means = {}
             for window in self._aggregation_windows:
@@ -193,11 +195,6 @@ class OrderBook:
                 increment_series = resampled_mid_prices.iloc[:-1]
         else:
             # on each subsequent interval, adding the mean to the training data
-            # latest_train_data_time = (
-            #     self._model_update_time
-            #     if self._model_update_time is not None
-            #     else self._forecast[:self._last_update].index[-1]
-            # )
             next_forecast_interval_start = self._model_update_time + self._forecast_sample_interval
             next_forecast_interval_end = next_forecast_interval_start + self._forecast_sample_interval
             if len(self._mid_prices[next_forecast_interval_end:]) > 0:
@@ -288,6 +285,8 @@ class OrderBook:
             name="forecast_mid_price"
         )
 
+        # TODO: we can probably remove join with sort by assigning the first 10 records and then the len(new_intervals)
+        #  records. The only problem is that it won't work when the `_forecast` DF does not yet have any forecasts.
         new_forecast = self._forecast.join(predictions, how="outer", sort=True, rsuffix="_r")
         new_forecast.loc[predictions.index, "forecast_mid_price"] = predictions
         self._forecast = new_forecast.drop(columns=["forecast_mid_price_r"])
